@@ -341,8 +341,6 @@ compileEntryExp = \case
       values <- sequence captureRecipes
       buildClosure allocFn storeFn mkClosureFn functionId values
 
--- | Compile the top-level entry expression (no arg, no closure environment
--- available) into an EntryRecipe.
 compileEntry
   :: Exp Build
   -> Map Int (Function Fn)
@@ -351,8 +349,6 @@ compileEntry
 compileEntry body functions runtime =
   runCompileWith (mkCompileEnv functions runtime) (compileEntryExp body)
 
--- | Compile a function body (has an arg and a closure environment) into a
--- Recipe.
 compileRecipe
   :: Exp Build
   -> Map Int (Function Fn)
