@@ -1,0 +1,61 @@
+cabal-version: 1.12
+
+-- This file has been generated from package.yaml by hpack version 0.38.3.
+--
+-- see: https://github.com/sol/hpack
+
+name:           language-indypaige-gay
+version:        0.0.0
+build-type:     Simple
+
+library
+  exposed-modules:
+      Compile
+      Data.Ast
+      Data.Token
+      FFI
+      Language
+      Runtime
+      Text.Build
+      Text.Infer
+      Text.Parse
+  hs-source-dirs:
+      src
+  default-extensions:
+      GeneralizedNewtypeDeriving
+      MultiParamTypeClasses
+      ScopedTypeVariables
+      StandaloneDeriving
+      OverloadedStrings
+      FlexibleInstances
+      TypeApplications
+      FlexibleContexts
+      RecordWildCards
+      PatternSynonyms
+      ConstraintKinds
+      TemplateHaskell
+      KindSignatures
+      NamedFieldPuns
+      TypeOperators
+      DeriveGeneric
+      TupleSections
+      TypeFamilies
+      LambdaCase
+      RankNTypes
+      PolyKinds
+      DataKinds
+      Arrows
+      GADTs
+  build-depends:
+      array
+    , base
+    , containers
+    , effectful
+    , lens
+    , llvm-tf
+    , megaparsec
+    , text
+    , tfp
+    , vector
+    , zippers
+  default-language: Haskell2010

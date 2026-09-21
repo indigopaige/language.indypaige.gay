@@ -1,0 +1,44 @@
+name: language-indypaige-gay
+spec-version: 0.36.0
+
+default-extensions:
+        - GeneralizedNewtypeDeriving
+        - MultiParamTypeClasses
+        - ScopedTypeVariables
+        - StandaloneDeriving
+        - OverloadedStrings
+        - FlexibleInstances
+        - TypeApplications
+        - FlexibleContexts
+        - RecordWildCards
+        - PatternSynonyms
+        - ConstraintKinds
+        - TemplateHaskell
+        - KindSignatures
+        - NamedFieldPuns
+        - TypeOperators
+        - DeriveGeneric
+        - TupleSections
+        - TypeFamilies
+        - LambdaCase
+        - RankNTypes
+        - PolyKinds
+        - DataKinds
+        - Arrows
+        - GADTs
+
+dependencies:
+        - megaparsec
+        - containers
+        - effectful
+        - zippers
+        - llvm-tf
+        - vector
+        - array
+        - lens
+        - base
+        - text
+        - tfp
+
+library:
+        source-dirs: src
