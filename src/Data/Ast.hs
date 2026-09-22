@@ -252,6 +252,13 @@ num = [ "addNum"
       , "divNum"
       ]
 
+opType :: Text -> Maybe Ty
+opType name
+  | name `elem` dec = Just TyDec
+  | name `elem` wrd = Just TyWrd
+  | name `elem` num = Just TyNum
+  | otherwise        = Nothing
+
 builtins :: Map Text Scheme
 builtins = Map.fromList (eq ++ oper)
   where

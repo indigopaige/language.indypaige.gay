@@ -12,6 +12,7 @@ library
   exposed-modules:
       Compile
       Data.Ast
+      Data.Functions
       Data.Token
       FFI
       Language

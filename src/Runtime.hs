@@ -59,7 +59,7 @@ makeClosure functionId environment = do
       , closureEnvironment' = environment
       }
 
-  pure 1234
+  pure $ handleOf ptr
 
 closureFunction :: Handle -> IO Word64
 closureFunction handle = do

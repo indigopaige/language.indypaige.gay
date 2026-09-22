@@ -1,18 +1,10 @@
-module FFI (mkEnvAlloc, mkEnvStore, mkEnvLoad, mkMakeClosure, mkClosureFunction, mkClosureEnvironment, importFn) where
+module FFI  where
 
+import Data.Functions
 import Foreign.Ptr
 import Data.Word
 import Runtime
-
-type Fn = Word64 -> Word64 -> IO Word64
-
-type EnvAlloc = Word64 -> IO Word64
-type EnvStore = Word64 -> Word64 -> Word64 -> IO ()
-type EnvLoad = Word64 -> Word64 -> IO Word64
-type MakeClosure = Word64 -> Word64 -> IO Word64
-type ClosureFunction = Word64 -> IO Word64
-type ClosureEnvironment = Word64 -> IO Word64
-
+ 
 foreign import ccall "wrapper"
   mkEnvAlloc :: EnvAlloc -> IO (FunPtr EnvAlloc)
 
