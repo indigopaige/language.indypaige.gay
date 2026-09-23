@@ -31,29 +31,20 @@ type Codegen es =
   ( Error CodegenError :> es
   , Reader CompileEnv :> es
   )
-type Recipe      = [Boxed] -> CGEnv -> CodeGenFunction Word64 Boxed
-type EntryRecipe = Function Fn -> CodeGenFunction Word64 Boxed
+type Recipe      = CGEnv -> CodeGenFunction Word64 Boxed
 
 type Functions   = Map Int (Exp Build)
 type Entry       = IO Word64
 type Boxed       = Value Word64
 
-class GenEntry a where
-  codegenEntry :: Codegen es => a -> Eff es EntryRecipe
-
 class Gen a where
   codegen :: Codegen es => a -> Eff es Recipe
 
-instance GenEntry (Lit Build) where
-  codegenEntry (Unsigned _ w) = pure $ \_ -> pure $ valueOf (fromIntegral w :: Word64)
-  codegenEntry (Decimal  _ d) = pure $ \_ -> bitcast (valueOf d)
-  codegenEntry (Boolean  _ b) = pure $ \_ -> zext (valueOf b)
-  codegenEntry (Signed   _ i) = pure $ \_ -> bitcast $ valueOf (fromIntegral i :: Int64)
-
 instance Gen (Lit Build) where
-  codegen lit = do
-    entry <- codegenEntry lit
-    pure $ \_ env -> entry (cgApp env)
+  codegen (Unsigned _ w) = pure $ \_ -> pure $ valueOf (fromIntegral w :: Word64)
+  codegen (Decimal  _ d) = pure $ \_ -> bitcast (valueOf d)
+  codegen (Boolean  _ b) = pure $ \_ -> zext (valueOf b)
+  codegen (Signed   _ i) = pure $ \_ -> bitcast $ valueOf (fromIntegral i :: Int64)
 
 data RuntimeFunctions = RuntimeFunctions
   { rfEnvAlloc           :: Function EnvAlloc
@@ -74,15 +65,15 @@ data RuntimePtrs = RuntimePtrs
   }
 
 data CompileEnv = CompileEnv
-  { ceSlots     :: Int
+  { ceEntry     :: Bool
   , ceFunctions :: Map Int (Function Fn)
   , ceRuntime   :: RuntimeFunctions
   }
 
-mkCompileEnv :: Map Int (Function Fn) -> RuntimeFunctions -> CompileEnv
-mkCompileEnv functions runtime =
+mkCompileEnv :: Bool -> Map Int (Function Fn) -> RuntimeFunctions -> CompileEnv
+mkCompileEnv isEntry functions runtime =
   CompileEnv
-    { ceSlots     = 0
+    { ceEntry     = isEntry
     , ceFunctions = functions
     , ceRuntime   = runtime
     }
@@ -227,14 +218,23 @@ compileBranch condition onTrue onFalse = do
 instance Gen (Exp Build) where
   codegen = \case
     Exp _ (Env i) -> do
-      ptr <- asks @CompileEnv (rfEnvLoad . ceRuntime)
-      pure $ \_ env -> loadEnv ptr (cgEnv env) i
+      isEntry <- asks ceEntry
+
+      if isEntry
+        then throwError (MissingSlot i)
+        else do
+          ptr <- asks @CompileEnv (rfEnvLoad . ceRuntime)
+          pure $ \env -> loadEnv ptr (cgEnv env) i
 
     Lit _ () lit -> codegen lit
 
     Exp _ (OutOfScope n) -> throwError (OutOfScopeVar n)
 
-    Exp _ Arg -> pure $ \_ env -> pure (cgArg env)
+    Exp _ Arg -> do
+      isEntry <- asks ceEntry
+      if isEntry
+        then throwError OutOfBounds
+        else pure $ \env -> pure (cgArg env)
 
     Var _ (x, _) -> throwError (InvalidVariable x)
 
@@ -245,9 +245,9 @@ instance Gen (Exp Build) where
           rl <- codegen lhsExp
           rr <- codegen rhsExp
 
-          pure $ \s e -> do
-            lv <- rl s e
-            rv <- rr s e
+          pure $ \e -> do
+            lv <- rl e
+            rv <- rr e
             compileEq lv rv
 
       | Just ty <- opType opName -> do
@@ -255,9 +255,9 @@ instance Gen (Exp Build) where
           rr <- codegen rhsExp
           op <- compileBinOp opName ty
 
-          pure $ \slots env -> do
-            lv <- rl slots env
-            rv <- rr slots env
+          pure $ \env -> do
+            lv <- rl env
+            rv <- rr env
             op lv rv
 
       | otherwise -> throwError $ UnknownBuiltin opName
@@ -266,9 +266,9 @@ instance Gen (Exp Build) where
       rf <- codegen f
       rx <- codegen x
 
-      pure $ \slots env -> do
-        fv <- rf slots env
-        xv <- rx slots env
+      pure $ \env -> do
+        fv <- rf env
+        xv <- rx env
 
         runCall $ applyCall (applyCall (callFromFunction (cgApp env)) fv) xv
 
@@ -278,8 +278,8 @@ instance Gen (Exp Build) where
       storeFn        <- asks @CompileEnv (rfEnvStore . ceRuntime)
       mkClosureFn    <- asks @CompileEnv (rfMakeClosure . ceRuntime)
 
-      pure $ \slots env -> do
-        values <- traverse (\recipe -> recipe slots env) captureRecipes
+      pure $ \env -> do
+        values <- traverse (\recipe -> recipe env) captureRecipes
         buildClosure allocFn storeFn mkClosureFn functionId values
 
     Cnd _ () x y z -> do
@@ -287,77 +287,16 @@ instance Gen (Exp Build) where
       ry <- codegen y
       rn <- codegen z
 
-      pure $ \slots env ->
-        compileBranch (rc slots env) (ry slots env) (rn slots env)
-
-instance GenEntry (Exp Build) where
-  codegenEntry = \case
-    Lit _ () lit -> codegenEntry lit
-
-    Exp _ (OutOfScope n) -> throwError (OutOfScopeVar n)
-
-    Exp _ (Env i) -> throwError (MissingSlot i)
-
-    Exp _ Arg -> throwError OutOfBounds
-
-    Var _ (x, _) -> throwError (InvalidVariable x)
-
-    Let s () _ _ -> throwError (LetSurvival s)
-
-    App _ () (App _ () (Exp _ (OutOfScope (Name opName _))) lhsExp) rhsExp
-      | opName == "eq" -> do
-          rl <- codegenEntry lhsExp
-          rr <- codegenEntry rhsExp
-
-          pure $ \applyFn -> do
-            lv <- rl applyFn
-            rv <- rr applyFn
-            compileEq lv rv
-
-      | Just ty <- opType opName -> do
-          rl <- codegenEntry lhsExp
-          rr <- codegenEntry rhsExp
-          op <- compileBinOp opName ty
-
-          pure $ \applyFn -> do
-            lv <- rl applyFn
-            rv <- rr applyFn
-            op lv rv
-      | otherwise -> throwError $ UnknownBuiltin opName
-
-    App _ () f x -> do
-      rf <- codegenEntry f
-      rx <- codegenEntry x
-      pure $ \applyFn -> do
-        fv <- rf applyFn
-        xv <- rx applyFn
-        runCall $ applyCall (applyCall (callFromFunction applyFn) fv) xv
-
-    Cnd _ () x y z -> do
-      rc <- codegenEntry x
-      ry <- codegenEntry y
-      rn <- codegenEntry z
-
-      pure $ \applyFn -> compileBranch (rc applyFn) (ry applyFn) (rn applyFn)
-
-    Exp _ (Closure functionId captures) -> do
-      captureRecipes <- traverse codegenEntry captures
-
-      allocFn     <- asks @CompileEnv (rfEnvAlloc . ceRuntime)
-      storeFn     <- asks @CompileEnv (rfEnvStore . ceRuntime)
-      mkClosureFn <- asks @CompileEnv (rfMakeClosure . ceRuntime)
-
-      pure $ \applyFn -> do
-        values <- traverse ($ applyFn) captureRecipes
-        buildClosure allocFn storeFn mkClosureFn functionId values
+      pure $ \env ->
+        compileBranch (rc env) (ry env) (rn env)
 
 compileEntry
   :: Exp Build
   -> Map Int (Function Fn)
   -> RuntimeFunctions
-  -> Either CodegenError EntryRecipe
+  -> Either CodegenError Recipe
 compileEntry body functions runtime =
-  runCompileWith (mkCompileEnv functions runtime) (codegenEntry body)
+  runCompileWith (mkCompileEnv True functions runtime) (codegen body)
 
 compileRecipe
   :: Exp Build
@@ -365,7 +304,7 @@ compileRecipe
   -> RuntimeFunctions
   -> Either CodegenError Recipe
 compileRecipe body functions runtime =
-  runCompileWith (mkCompileEnv functions runtime) (codegen body)
+  runCompileWith (mkCompileEnv False functions runtime) (codegen body)
 
 declareFunctions
   :: Functions
@@ -401,7 +340,7 @@ defineCompiledFunction function recipe applyFn =
             , cgApp = applyFn
             }
 
-    result <- recipe [] cgEnv
+    result <- recipe cgEnv
     ret result
 
 defineApply
@@ -542,12 +481,17 @@ buildModule body functions runtime = do
             (Right
               (compiled, applyFn, entryFn, runtimeFns))
 
-defineEntry :: Function Fn -> EntryRecipe -> CodeGenModule (Function Entry)
+defineEntry :: Function Fn -> Recipe -> CodeGenModule (Function Entry)
 defineEntry applyFn recipe = do
   entryFn <- newNamedFunction ExternalLinkage "entry"
 
   defineFunction entryFn $ do
-    result <- recipe applyFn
+    result <- recipe CGEnv
+      { cgArg = valueOf 0
+      , cgEnv = valueOf 0
+      , cgApp = applyFn
+      }
+
     ret result
 
   pure entryFn
