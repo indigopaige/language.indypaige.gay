@@ -32,7 +32,7 @@ type Codegen es =
   , Reader CompileEnv :> es
   )
 type Recipe      = [Boxed] -> CGEnv -> CodeGenFunction Word64 Boxed
-type EntryRecipe = CodeGenFunction Word64 Boxed
+type EntryRecipe = Function Fn -> CodeGenFunction Word64 Boxed
 
 type Functions   = Map Int (Exp Build)
 type Entry       = IO Word64
@@ -45,13 +45,15 @@ class Gen a where
   codegen :: Codegen es => a -> Eff es Recipe
 
 instance GenEntry (Lit Build) where
-  codegenEntry (Unsigned _ w) = pure . pure $ valueOf (fromIntegral w :: Word64)
-  codegenEntry (Decimal  _ d) = pure $ bitcast (valueOf d)
-  codegenEntry (Boolean  _ b) = pure $ zext (valueOf b)
-  codegenEntry (Signed   _ i) = pure $ bitcast $ valueOf (fromIntegral i :: Int64)
+  codegenEntry (Unsigned _ w) = pure $ \_ -> pure $ valueOf (fromIntegral w :: Word64)
+  codegenEntry (Decimal  _ d) = pure $ \_ -> bitcast (valueOf d)
+  codegenEntry (Boolean  _ b) = pure $ \_ -> zext (valueOf b)
+  codegenEntry (Signed   _ i) = pure $ \_ -> bitcast $ valueOf (fromIntegral i :: Int64)
 
 instance Gen (Lit Build) where
-  codegen = fmap (\x _ _ -> x) . codegenEntry
+  codegen lit = do
+    entry <- codegenEntry lit
+    pure $ \_ env -> entry (cgApp env)
 
 data RuntimeFunctions = RuntimeFunctions
   { rfEnvAlloc           :: Function EnvAlloc
@@ -307,9 +309,9 @@ instance GenEntry (Exp Build) where
           rl <- codegenEntry lhsExp
           rr <- codegenEntry rhsExp
 
-          pure $ do
-            lv <- rl
-            rv <- rr
+          pure $ \applyFn -> do
+            lv <- rl applyFn
+            rv <- rr applyFn
             compileEq lv rv
 
       | Just ty <- opType opName -> do
@@ -317,20 +319,26 @@ instance GenEntry (Exp Build) where
           rr <- codegenEntry rhsExp
           op <- compileBinOp opName ty
 
-          pure $ do
-            lv <- rl
-            rv <- rr
+          pure $ \applyFn -> do
+            lv <- rl applyFn
+            rv <- rr applyFn
             op lv rv
       | otherwise -> throwError $ UnknownBuiltin opName
 
-    App _ () _ _ -> throwError OutOfBounds
+    App _ () f x -> do
+      rf <- codegenEntry f
+      rx <- codegenEntry x
+      pure $ \applyFn -> do
+        fv <- rf applyFn
+        xv <- rx applyFn
+        runCall $ applyCall (applyCall (callFromFunction applyFn) fv) xv
 
     Cnd _ () x y z -> do
       rc <- codegenEntry x
       ry <- codegenEntry y
       rn <- codegenEntry z
 
-      pure $ compileBranch rc ry rn
+      pure $ \applyFn -> compileBranch (rc applyFn) (ry applyFn) (rn applyFn)
 
     Exp _ (Closure functionId captures) -> do
       captureRecipes <- traverse codegenEntry captures
@@ -339,8 +347,8 @@ instance GenEntry (Exp Build) where
       storeFn     <- asks @CompileEnv (rfEnvStore . ceRuntime)
       mkClosureFn <- asks @CompileEnv (rfMakeClosure . ceRuntime)
 
-      pure $ do
-        values <- sequence captureRecipes
+      pure $ \applyFn -> do
+        values <- traverse ($ applyFn) captureRecipes
         buildClosure allocFn storeFn mkClosureFn functionId values
 
 compileEntry
@@ -528,18 +536,18 @@ buildModule body functions runtime = do
           pure (Left err)
 
         Right entryRecipe -> do
-          entryFn <- defineEntry entryRecipe
+          entryFn <- defineEntry applyFn entryRecipe
 
           pure
             (Right
               (compiled, applyFn, entryFn, runtimeFns))
 
-defineEntry :: EntryRecipe -> CodeGenModule (Function Entry)
-defineEntry recipe = do
+defineEntry :: Function Fn -> EntryRecipe -> CodeGenModule (Function Entry)
+defineEntry applyFn recipe = do
   entryFn <- newNamedFunction ExternalLinkage "entry"
 
   defineFunction entryFn $ do
-    result <- recipe
+    result <- recipe applyFn
     ret result
 
   pure entryFn

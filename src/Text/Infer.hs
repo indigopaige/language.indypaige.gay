@@ -21,9 +21,9 @@ expParseToInfer e = f e & runPureEff . runReader @[Text] []
     f (App span () x y)            = App span () <$> f x <*> f y
 
     f (Let span (Name name _) x y) = do
-      lhs <- f x
-      rhs <- local (name:) (f y)
-      pure $ Let span () lhs rhs
+      l <- f x
+      r <- local (name:) (f y)
+      pure $ Let span () l r
 
     f (Abs span (Name name _) x)   = do
       lhs <- local (name:) (f x)
