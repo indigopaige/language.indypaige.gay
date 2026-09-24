@@ -31,6 +31,7 @@ type Codegen es =
   ( Error CodegenError :> es
   , Reader CompileEnv :> es
   )
+
 type Recipe      = CGEnv -> CodeGenFunction Word64 Boxed
 
 type Functions   = Map Int (Exp Build)
@@ -50,7 +51,9 @@ data RuntimeFunctions = RuntimeFunctions
   { rfEnvAlloc           :: Function EnvAlloc
   , rfEnvStore           :: Function EnvStore
   , rfEnvLoad            :: Function EnvLoad
+  , rfMakeData           :: Function MakeData
   , rfMakeClosure        :: Function MakeClosure
+  , rfDataEnvironment    :: Function DataEnvironment
   , rfClosureFunction    :: Function ClosureFunction
   , rfClosureEnvironment :: Function ClosureEnvironment
   }
@@ -59,7 +62,9 @@ data RuntimePtrs = RuntimePtrs
   { envAllocPtr           :: FunPtr EnvAlloc
   , envStorePtr           :: FunPtr EnvStore
   , envLoadPtr            :: FunPtr EnvLoad
+  , makeDataPtr           :: FunPtr MakeData
   , makeClosurePtr        :: FunPtr MakeClosure
+  , dataEnvironmentPtr    :: FunPtr DataEnvironment
   , closureFunctionPtr    :: FunPtr ClosureFunction
   , closureEnvironmentPtr :: FunPtr ClosureEnvironment
   }
@@ -107,6 +112,41 @@ getCompiledFunction i = do
 
 compileEq :: Boxed -> Boxed -> CodeGenFunction r Boxed
 compileEq lhs rhs = cmp CmpEQ lhs rhs >>= zext
+
+buildData
+  :: Function EnvAlloc
+  -> Function EnvStore
+  -> Function MakeData
+  -> TypeId
+  -> Int
+  -> [Boxed]
+  -> CodeGenFunction r Boxed
+
+buildData allocFn storeFn makeDataFn (TypeId typeId) tag fields = do
+  environment <-
+    runCall $
+      applyCall
+        (callFromFunction allocFn)
+        (valueOf $ fromIntegral (length fields) :: Value Word64)
+
+  forM_ (zip [0..] fields) $ \(i, field) ->
+    runCall $
+      applyCall
+        (applyCall
+          (applyCall
+            (callFromFunction storeFn)
+            environment)
+          (valueOf $ fromIntegral i :: Value Word64))
+        field
+
+  runCall $
+    applyCall
+      (applyCall
+        (applyCall
+          (callFromFunction makeDataFn)
+          (valueOf $ fromIntegral typeId :: Value Word64))
+        (valueOf $ fromIntegral tag :: Value Word64))
+      environment
 
 compileBinOp :: Codegen es => Text -> Ty -> Eff es (Boxed -> Boxed -> CodeGenFunction r Boxed)
 compileBinOp name ty = case ty of
@@ -217,6 +257,34 @@ compileBranch condition onTrue onFalse = do
 
 instance Gen (Exp Build) where
   codegen = \case
+    Exp _ (DataBuild tid tag fields) -> do
+      fieldRecipes <- traverse codegen fields
+
+      allocFn <- asks @CompileEnv $ rfEnvAlloc . ceRuntime
+
+      storeFn <- asks @CompileEnv $ rfEnvStore . ceRuntime
+
+      makeDataFn <- asks @CompileEnv $ rfMakeData . ceRuntime
+
+      pure $ \env -> do
+        values <- traverse (\recipe -> recipe env) fieldRecipes
+
+        buildData allocFn storeFn makeDataFn tid tag values
+
+    Acc _ ref x -> do
+      rx <- codegen x
+
+      dataEnvFn <- asks @CompileEnv $ rfDataEnvironment . ceRuntime
+
+      loadFn <- asks @CompileEnv $ rfEnvLoad . ceRuntime
+
+      pure $ \env -> do
+        value <- rx env
+
+        fields <- runCall $ applyCall (callFromFunction dataEnvFn) value
+
+        loadEnv loadFn fields (fieldIndex ref)
+
     Exp _ (Env i) -> do
       isEntry <- asks ceEntry
 
@@ -238,7 +306,7 @@ instance Gen (Exp Build) where
 
     Var _ (x, _) -> throwError (InvalidVariable x)
 
-    Let s () _ _ -> throwError (LetSurvival s)
+    Let s _ _ _ -> throwError (LetSurvival s)
 
     App _ () (App _ () (Exp _ (OutOfScope (Name opName _))) lhsExp) rhsExp
       | opName == "eq" -> do
@@ -438,7 +506,6 @@ dispatchApply functions functionId environment argument = do
 buildModule
   :: Exp Build
   -> Functions
-  -> RuntimePtrs
   -> CodeGenModule
        (Either CodegenError
          ( Map Int (Function Fn)
@@ -446,7 +513,7 @@ buildModule
          , Function Entry
          , RuntimeFunctions
          ))
-buildModule body functions runtime = do
+buildModule body functions = do
   runtimeFns <- declareRuntimeFunctions
 
   compiled <- declareFunctions functions
@@ -522,11 +589,21 @@ declareRuntimeFunctions = do
     newNamedFunction ExternalLinkage "closure_environment"
       :: CodeGenModule (Function ClosureEnvironment)
 
+  dataEnvironment <-
+    newNamedFunction ExternalLinkage "data_environment"
+      :: CodeGenModule (Function DataEnvironment)
+
+  makeData <-
+    newNamedFunction ExternalLinkage "make_data"
+      :: CodeGenModule (Function MakeData)
+
   pure RuntimeFunctions
     { rfEnvAlloc = envAlloc
     , rfEnvStore = envStore
     , rfEnvLoad = envLoad
+    , rfMakeData = makeData
     , rfMakeClosure = makeClosure
+    , rfDataEnvironment = dataEnvironment
     , rfClosureFunction = closureFunction
     , rfClosureEnvironment = closureEnvironment
     }

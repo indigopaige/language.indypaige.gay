@@ -1,5 +1,6 @@
 module Language where
 
+import qualified Data.Text.IO as Text
 import qualified Type.Base.Proxy as T
 import Control.Exception (bracket)
 import Control.Monad.IO.Class
@@ -16,6 +17,7 @@ import Compile
 import LLVM.ExecutionEngine
 import Runtime
 import Foreign.Ptr (FunPtr, nullFunPtr, freeHaskellFunPtr)
+import Foreign.StablePtr
 import FFI
 
 withRuntimePtrs :: (RuntimePtrs -> IO a) -> IO a
@@ -26,7 +28,9 @@ withRuntimePtrs =
       envAllocPtr'           <- mkEnvAlloc envAlloc
       envStorePtr'           <- mkEnvStore envStore
       envLoadPtr'            <- mkEnvLoad envLoad
+      makeDataPtr'           <- mkMakeData makeData
       makeClosurePtr'        <- mkMakeClosure makeClosure
+      dataEnvironmentPtr'    <- mkDataEnvironment dataEnvironment
       closureFunctionPtr'    <- mkClosureFunction closureFunction
       closureEnvironmentPtr' <- mkClosureEnvironment closureEnvironment
 
@@ -34,7 +38,9 @@ withRuntimePtrs =
         { envAllocPtr           = envAllocPtr'
         , envStorePtr           = envStorePtr'
         , envLoadPtr            = envLoadPtr'
+        , makeDataPtr           = makeDataPtr'
         , makeClosurePtr        = makeClosurePtr'
+        , dataEnvironmentPtr    = dataEnvironmentPtr'
         , closureFunctionPtr    = closureFunctionPtr'
         , closureEnvironmentPtr = closureEnvironmentPtr'
         }
@@ -43,9 +49,25 @@ withRuntimePtrs =
       freeHaskellFunPtr (envAllocPtr runtime)
       freeHaskellFunPtr (envStorePtr runtime)
       freeHaskellFunPtr (envLoadPtr runtime)
+      freeHaskellFunPtr (makeDataPtr runtime)
       freeHaskellFunPtr (makeClosurePtr runtime)
       freeHaskellFunPtr (closureFunctionPtr runtime)
       freeHaskellFunPtr (closureEnvironmentPtr runtime)
+
+dataType :: Handle -> IO Word64
+dataType handle = do
+  value <- deRefStablePtr $ stablePtrOf handle
+  pure $ dataTypeId value
+
+dataConstructor :: Handle -> IO Word64
+dataConstructor handle = do
+  value <- deRefStablePtr $ stablePtrOf handle
+  pure $ dataTag value
+
+dataField :: Handle -> Word64 -> IO Word64
+dataField handle index = do
+  value <- deRefStablePtr $ stablePtrOf handle
+  envLoad (dataEnvironment' value) index
 
 compile :: Text -> IO (Maybe Word64)
 compile x = do
@@ -55,12 +77,12 @@ compile x = do
     Nothing ->
       pure Nothing
 
-    Just (body, functions) ->
+    Just (body, functions, typeDefs) ->
       withRuntimePtrs $ \runtime -> do
         module_ <- newModule
 
         built <- defineModule module_ $
-          buildModule body functions runtime
+          buildModule body functions
 
         case built of
           Left err ->
@@ -74,7 +96,11 @@ compile x = do
 
               addFunctionValue (rfEnvLoad runtimeFns) (envLoadPtr runtime)
 
+              addFunctionValue (rfMakeData runtimeFns) (makeDataPtr runtime)
+
               addFunctionValue (rfMakeClosure runtimeFns) (makeClosurePtr runtime)
+
+              addFunctionValue (rfDataEnvironment runtimeFns) (dataEnvironmentPtr runtime)
 
               addFunctionValue (rfClosureFunction runtimeFns) (closureFunctionPtr runtime)
 
@@ -86,21 +112,55 @@ compile x = do
 
             pure (Just result)
 
-run :: Text -> IO (Maybe (Exp Build, Functions))
+run :: Text -> IO (Maybe (Exp Build, Functions, TypeDefs))
 run x =
   case p of
-    Left e -> print e >> pure Nothing
+    Left e ->
+      print e >> pure Nothing
 
     Right parsed ->
-      let infer = expParseToInfer parsed
-      in case inferTy infer of
-           Left e ->
-             print e >> pure Nothing
+      case expParseToInfer parsed of
+        Left e ->
+          print e >> pure Nothing
 
-           Right _ ->
-             case runConvert (reduce infer) of
-               Left e -> print e >> pure Nothing
-               Right z -> pure (Just z)
+        Right (infer, typeDefs) ->
+          case inferTy infer of
+            Left e ->
+              print e >> pure Nothing
+
+            Right _ ->
+              case runConvert (reduce infer) of
+                Left e ->
+                  print e >> pure Nothing
+
+                Right (body, functions) ->
+                  pure $ Just (body, functions, typeDefs)
 
   where
-    p = parseTokenStream expr keywords "test" x
+    p =
+      parseTokenStream expr keywords "test" x
+
+compileFile :: FilePath -> FilePath -> IO Bool
+compileFile input output = do
+  source <- Text.readFile input
+  result <- run source
+
+  case result of
+    Nothing ->
+      pure False
+
+    Just (body, functions, _typeDefs) -> do
+      module_ <- newModule
+
+      built <-
+        defineModule module_ $
+          buildModule body functions
+
+      case built of
+        Left err -> do
+          print err
+          pure False
+
+        Right _ -> do
+          writeBitcodeToFile output module_
+          pure True

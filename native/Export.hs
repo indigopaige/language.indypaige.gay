@@ -1,5 +1,6 @@
 module Export () where
 
+import Data.Functions
 import Data.Word
 import Runtime
 
@@ -20,3 +21,9 @@ foreign export ccall "closure_function"
 
 foreign export ccall "closure_environment"
   closureEnvironment :: Word64 -> IO Word64
+
+foreign export ccall "make_data"
+  makeData :: MakeData
+
+foreign export ccall "data_environment"
+  dataEnvironment :: DataEnvironment

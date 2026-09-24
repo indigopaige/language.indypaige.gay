@@ -16,6 +16,59 @@ data Closure = Closure
   , closureEnvironment' :: Handle
   }
 
+data DataValue = DataValue
+  { dataTypeId       :: Word64
+  , dataTag          :: Word64
+  , dataEnvironment' :: Handle
+  }
+
+makeData
+  :: Word64
+  -> Word64
+  -> Handle
+  -> IO Handle
+
+makeData typeId tag environment = do
+  ptr <-
+    newStablePtr $
+      DataValue
+        { dataTypeId       = typeId
+        , dataTag          = tag
+        , dataEnvironment' = environment
+        }
+
+  pure $
+    handleOf ptr
+
+dataType :: Handle -> IO Word64
+dataType handle = do
+  value <-
+    deRefStablePtr $
+      stablePtrOf handle
+
+  pure $
+    dataTypeId value
+
+
+dataConstructor :: Handle -> IO Word64
+dataConstructor handle = do
+  value <-
+    deRefStablePtr $
+      stablePtrOf handle
+
+  pure $
+    dataTag value
+
+
+dataEnvironment :: Handle -> IO Handle
+dataEnvironment handle = do
+  value <-
+    deRefStablePtr $
+      stablePtrOf handle
+
+  pure $
+    dataEnvironment' value
+
 handleOf :: StablePtr a -> Handle
 handleOf =
   fromIntegral . ptrToWordPtr . castStablePtrToPtr
@@ -78,3 +131,4 @@ closureFree handle = do
   envFree (closureEnvironment' closure)
 
   freeStablePtr (stablePtrOf handle)
+

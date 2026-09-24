@@ -125,6 +125,7 @@ type family XCnd x
 type family XLet x
 type family XLit x
 type family XTyp x
+type family XAcc x
 
 type family XRecord x
 type family XSingle x
@@ -172,18 +173,19 @@ data Exp x
   = Cnd Span (XCnd x) (Exp x) (Exp x) (Exp x)
   | Let Span (XLet x) (Exp x) (Exp x)
   | App Span (XApp x) (Exp x) (Exp x)
+  | Acc Span (XAcc x) (Exp x)
   | Lit Span (XLit x) (Lit x)
   | Abs Span (XAbs x) (Exp x)
   | Typ Span (XTyp x) (Typ x)
   | Var Span (XVar x)
   | Exp Span (XExp x)
 
-
 instance Plated (Exp x) where 
   plate f (Cnd s e x y z) = Cnd s e <$> f x <*> f y <*> f z
   plate f (Let s e l r)   = Let s e <$> f l <*> f r
   plate f (App s e l r)   = App s e <$> f l <*> f r
   plate f (Abs s e e')    = Abs s e <$> f e'
+  plate f (Acc s e x)     = Acc s e <$> f x
   plate _ x               = pure x
 
 instance HasSpan (Exp Parse) where
@@ -192,6 +194,7 @@ instance HasSpan (Exp Parse) where
   getSpan (App span _ _ _)   = span
   getSpan (Lit span _ _)     = span
   getSpan (Abs span _ _)     = span
+  getSpan (Acc span _ _)     = span
   getSpan (Var span _)       = span
   getSpan (Exp _ v)          = absurd v
 
@@ -215,16 +218,20 @@ type instance XCnd Parse = ()
 type instance XCnd Infer = ()
 type instance XCnd Build = ()
 
+type instance XAcc Parse = Name
+type instance XAcc Infer = FieldBinding
+type instance XAcc Build = FieldRef
+
 type instance XLit Parse = ()
 type instance XLit Infer = ()
 type instance XLit Build = ()
 
 type instance XTyp Parse = ()
-type instance XTyp Infer = Int
-type instance XTyp Build = Int
+type instance XTyp Infer = TypeId
+type instance XTyp Build = TypeId
 
 type instance XExp Parse = Void
-type instance XExp Infer = Name
+type instance XExp Infer = XInfer
 type instance XExp Build = XBuild
 
 deriving instance Show (Exp Parse)
@@ -238,6 +245,22 @@ deriving instance Ord  (Exp Build)
 deriving instance Eq   (Exp Parse)
 deriving instance Eq   (Exp Infer)
 deriving instance Eq   (Exp Build)
+
+data FieldRef = FieldRef
+  { fieldTypeId :: TypeId
+  , fieldTag    :: Int
+  , fieldIndex  :: Int
+  }
+  deriving ( Show
+           , Ord
+           , Eq
+           )
+
+data FieldBinding = FieldBinding
+  { fieldRef    :: FieldRef
+  , fieldScheme :: Scheme
+  }
+  deriving (Show, Ord, Eq)
 
 data Delim
   = Parens
@@ -257,9 +280,15 @@ keywords = [ "else"
            , "in"
            ]
 
+newtype TypeId = TypeId Int
+  deriving ( Show
+           , Ord
+           , Eq
+           )
+
 data Ty
   = TyCon Text [Ty]
-  | TyNom Int [Ty]
+  | TyNom TypeId [Ty]
   | TyVar Name
   deriving ( Show
            , Ord
@@ -305,6 +334,10 @@ pattern TyTyp = F "typ"
 
 data Constraint  = Constraint Ty Ty
 data Scheme      = Forall (Set Text) Ty
+  deriving ( Show
+           , Ord
+           , Eq
+           )
 
 dec :: [Text]
 dec = [ "addDec"
@@ -353,8 +386,10 @@ builtins = Map.fromList (eq ++ oper)
         d3   = TyDec :-> TyDec :-> TyDec
 
 data XBuild
-  = Closure Int [Exp Build]
+  = DataBuild TypeId Int [Exp Build]
   | RecClosure Int [Exp Build]
+  | Closure Int [Exp Build]
+  | DataAcc Int
   | Local Int
   | OutOfScope Name
   | Env Int
@@ -363,6 +398,11 @@ data XBuild
            , Ord
            , Eq
            )
+
+data XInfer
+  = Free Name
+  | Data Name TypeId Int Int
+  deriving (Show, Ord, Eq)
 
 free :: Exp Infer -> Set Int
 free = f 1
@@ -380,6 +420,8 @@ free = f 1
 
     f n (App _ () x y) =
       f n x `Set.union` f n y
+
+    f n (Acc _ _ x) = f n x
 
     f n (Cnd _ () x y z) =
       f n x `Set.union` f n y `Set.union` f n z
