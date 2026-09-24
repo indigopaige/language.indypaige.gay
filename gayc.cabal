@@ -4,7 +4,7 @@ cabal-version: 1.12
 --
 -- see: https://github.com/sol/hpack
 
-name:           language-indypaige-gay
+name:           gayc
 version:        0.0.0
 build-type:     Simple
 
@@ -52,6 +52,48 @@ library
     , base
     , containers
     , effectful
+    , lens
+    , llvm-tf
+    , megaparsec
+    , text
+    , tfp
+    , vector
+    , zippers
+  default-language: Haskell2010
+
+executable gayc
+  main-is: app/Main.hs
+  default-extensions:
+      GeneralizedNewtypeDeriving
+      MultiParamTypeClasses
+      ScopedTypeVariables
+      StandaloneDeriving
+      OverloadedStrings
+      FlexibleInstances
+      TypeApplications
+      FlexibleContexts
+      RecordWildCards
+      PatternSynonyms
+      ConstraintKinds
+      TemplateHaskell
+      KindSignatures
+      NamedFieldPuns
+      TypeOperators
+      DeriveGeneric
+      TupleSections
+      TypeFamilies
+      LambdaCase
+      RankNTypes
+      PolyKinds
+      DataKinds
+      Arrows
+      GADTs
+  build-depends:
+      array
+    , base
+    , containers
+    , effectful
+    , gayc
     , lens
     , llvm-tf
     , megaparsec

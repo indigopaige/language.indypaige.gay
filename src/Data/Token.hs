@@ -65,6 +65,9 @@ data Tok = Tok
            , Eq
            )
 
+instance HasSpan Tok where
+  getSpan (Tok s _) = s
+
 makePrisms ''Delim
 makeLenses ''Delim
 makeLenses ''Kind
@@ -85,7 +88,7 @@ spanOf m = do
 
 tok :: [Text] -> Lex Tok
 tok keywords = msum [ w
-           , l
+           , try l
            , k
            , i
            , t
@@ -147,6 +150,7 @@ tok keywords = msum [ w
           '.'  -> Just Dot
           '@'  -> Just At
           '='  -> Just Eq
+          '|'  -> Just Or
           '<'  -> Just Lt
           '>'  -> Just Gt
           _    -> Nothing

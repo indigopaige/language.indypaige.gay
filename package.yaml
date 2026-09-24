@@ -1,4 +1,4 @@
-name: language-indypaige-gay
+name: gayc
 spec-version: 0.36.0
 
 default-extensions:
@@ -39,6 +39,12 @@ dependencies:
         - base
         - text
         - tfp
+
+executables:
+        gayc:
+                main: app/Main.hs
+                dependencies:
+                        - gayc
 
 library:
         source-dirs: src

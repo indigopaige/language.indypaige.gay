@@ -124,6 +124,49 @@ type family XVar x
 type family XCnd x
 type family XLet x
 type family XLit x
+type family XTyp x
+
+type family XRecord x
+type family XSingle x
+
+data Constructor x
+  = Record (XRecord x) [(Name, Ty)]
+  | Single (XSingle x) [Ty]
+
+instance HasSpan (Constructor Parse) where
+  getSpan (Record s _) = s
+  getSpan (Single s _) = s
+
+data Typ x = Named [Name] [(Name, Constructor x)]
+
+type instance XRecord Parse = Span
+type instance XRecord Infer = Span
+type instance XRecord Build = Span
+
+type instance XSingle Parse = Span
+type instance XSingle Infer = Span
+type instance XSingle Build = Span
+
+deriving instance Show (Constructor Parse)
+deriving instance Show (Constructor Infer)
+deriving instance Show (Constructor Build)
+deriving instance Show (Typ Parse)
+deriving instance Show (Typ Infer)
+deriving instance Show (Typ Build)
+
+deriving instance Ord (Constructor Parse)
+deriving instance Ord (Constructor Infer)
+deriving instance Ord (Constructor Build)
+deriving instance Ord (Typ Parse)
+deriving instance Ord (Typ Infer)
+deriving instance Ord (Typ Build)
+
+deriving instance Eq (Constructor Parse)
+deriving instance Eq (Constructor Infer)
+deriving instance Eq (Constructor Build)
+deriving instance Eq (Typ Parse)
+deriving instance Eq (Typ Infer)
+deriving instance Eq (Typ Build)
 
 data Exp x
   = Cnd Span (XCnd x) (Exp x) (Exp x) (Exp x)
@@ -131,8 +174,10 @@ data Exp x
   | App Span (XApp x) (Exp x) (Exp x)
   | Lit Span (XLit x) (Lit x)
   | Abs Span (XAbs x) (Exp x)
+  | Typ Span (XTyp x) (Typ x)
   | Var Span (XVar x)
   | Exp Span (XExp x)
+
 
 instance Plated (Exp x) where 
   plate f (Cnd s e x y z) = Cnd s e <$> f x <*> f y <*> f z
@@ -164,7 +209,7 @@ type instance XVar Build = (Name, Int)
 
 type instance XLet Parse = Name
 type instance XLet Infer = ()
-type instance XLet Build = ()
+type instance XLet Build = Int
 
 type instance XCnd Parse = ()
 type instance XCnd Infer = ()
@@ -173,6 +218,10 @@ type instance XCnd Build = ()
 type instance XLit Parse = ()
 type instance XLit Infer = ()
 type instance XLit Build = ()
+
+type instance XTyp Parse = ()
+type instance XTyp Infer = Int
+type instance XTyp Build = Int
 
 type instance XExp Parse = Void
 type instance XExp Infer = Name
@@ -202,6 +251,7 @@ data Delim
 keywords :: [Text]
 keywords = [ "else"
            , "then"
+           , "type"
            , "let"
            , "if"
            , "in"
@@ -209,24 +259,49 @@ keywords = [ "else"
 
 data Ty
   = TyCon Text [Ty]
-  | TyVar Text
+  | TyNom Int [Ty]
+  | TyVar Name
   deriving ( Show
            , Ord
-           , Eq
            )
+
+instance HasSpan Ty where
+  getSpan (TyVar name) = getSpan name
+  getSpan (TyCon _ []) = dummy
+  getSpan (TyCon _ (x:xs))
+    = extend
+      (getSpan x)
+      (getSpan $ last xs)
+
+instance Eq Ty where
+  TyCon a as == TyCon b bs =
+    a == b && as == bs
+
+  TyVar (Name a _) == TyVar (Name b _) =
+    a == b
+
+  _ == _ = False
+
+dummy :: Span
+dummy = Span 0 0
 
 instance Plated Ty where
   plate f (TyCon s x) = TyCon s <$> traverse f x
+  plate f (TyNom n x) = TyNom n <$> traverse f x
   plate _ x           = pure x
 
 infixr 9 :->
 
+pattern (:->) :: Ty -> Ty -> Ty
 pattern a :-> b = TyCon "->" [a, b]
-pattern F s     = TyCon s []
-pattern TyWrd   = F "wrd"
-pattern TyNum   = F "num"
-pattern TyBin   = F "bin"
-pattern TyDec   = F "dec"
+
+pattern F s = TyCon s []
+
+pattern TyWrd = F "wrd"
+pattern TyNum = F "num"
+pattern TyBin = F "bin"
+pattern TyDec = F "dec"
+pattern TyTyp = F "typ"
 
 data Constraint  = Constraint Ty Ty
 data Scheme      = Forall (Set Text) Ty
@@ -262,7 +337,10 @@ opType name
 builtins :: Map Text Scheme
 builtins = Map.fromList (eq ++ oper)
   where
-    eq   = [ ("eq", Forall (Set.singleton "a") (TyVar "a" :-> TyVar "a" :-> TyBin)) ]
+    eq   = [ ("eq", Forall (Set.singleton "a") (TyVar a :-> TyVar a :-> TyBin)) ]
+      where
+        a = Name "a" dummy
+
     mono = Forall mempty
     oper = concat [dec', wrd', num']
       where
@@ -276,6 +354,8 @@ builtins = Map.fromList (eq ++ oper)
 
 data XBuild
   = Closure Int [Exp Build]
+  | RecClosure Int [Exp Build]
+  | Local Int
   | OutOfScope Name
   | Env Int
   | Arg
@@ -287,12 +367,22 @@ data XBuild
 free :: Exp Infer -> Set Int
 free = f 1
   where
-    f n (Var _ (_, n')) | n' >= n = Set.singleton (n' - n)
-    f _ (Var _ _)                 = mempty
+    f n (Var _ (_, n'))
+      | n' >= n   = Set.singleton (n' - n)
+      | otherwise = mempty
 
-    f n (Abs _ () x)              = f (n + 1) x
+    f n (Abs _ () x) =
+      f (n + 1) x
 
-    f n (App _ () x y)            = f n x `Set.union` f n y
+    -- let is recursive, so its binder is in scope in both sides.
+    f n (Let _ () x y) =
+      f (n + 1) x `Set.union` f (n + 1) y
 
-    f _ _                         = mempty
+    f n (App _ () x y) =
+      f n x `Set.union` f n y
+
+    f n (Cnd _ () x y z) =
+      f n x `Set.union` f n y `Set.union` f n z
+
+    f _ _ = mempty
 
